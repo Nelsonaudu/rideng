@@ -6,6 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.driver_profile import DriverProfile
+from app.models.rider_profile import RiderProfile
 from app.models.user import User
 from app.models.user_role import UserRole as UserRoleModel
 from app.schemas.user import UserCreate, UserResponse
@@ -43,24 +45,43 @@ def create_user(
 
     db.add(db_user)
 
-    # Prevent duplicate roles such as ["rider", "rider"].
+    # Remove duplicate roles while preserving order.
     unique_roles = list(dict.fromkeys(user.roles))
+    role_values = [role.value for role in unique_roles]
 
     try:
-        # Create the user row and generate its UUID
-        # without committing the transaction yet.
+        # Insert the user first so PostgreSQL/SQLAlchemy
+        # generates the user's UUID.
         db.flush()
 
-        # Store each role in user_roles.
-        for role in unique_roles:
+        # Store the user's roles.
+        for role_value in role_values:
             db.add(
                 UserRoleModel(
                     user_id=db_user.id,
-                    role=role.value,
+                    role=role_value,
                 )
             )
 
-        # Permanently save the user and roles.
+        # Automatically create a RiderProfile
+        # when the user has the rider role.
+        if "rider" in role_values:
+            db.add(
+                RiderProfile(
+                    user_id=db_user.id,
+                )
+            )
+
+        # Automatically create a DriverProfile
+        # when the user has the driver role.
+        if "driver" in role_values:
+            db.add(
+                DriverProfile(
+                    user_id=db_user.id,
+                )
+            )
+
+        # Save the complete account as one transaction.
         db.commit()
         db.refresh(db_user)
 
