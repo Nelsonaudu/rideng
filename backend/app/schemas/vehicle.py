@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.verification import VerificationStatus
+
 
 class VehicleCreate(BaseModel):
     make: str = Field(min_length=2, max_length=50)
@@ -27,6 +29,6 @@ class VehicleResponse(BaseModel):
     year: int
     color: str
     plate_number: str
-    verification_status: str
+    verification_status: VerificationStatus
     is_active: bool
     created_at: datetime
