@@ -11,12 +11,37 @@ class UserRole(str, Enum):
     admin = "admin"
 
 
+class PublicUserRole(str, Enum):
+    rider = "rider"
+    driver = "driver"
+
+
 class UserCreate(BaseModel):
-    first_name: str = Field(min_length=2, max_length=50)
-    last_name: str = Field(min_length=2, max_length=50)
-    phone_number: str = Field(min_length=10, max_length=20)
+    first_name: str = Field(
+        min_length=2,
+        max_length=50,
+    )
+
+    last_name: str = Field(
+        min_length=2,
+        max_length=50,
+    )
+
+    phone_number: str = Field(
+        min_length=10,
+        max_length=20,
+    )
+
     email: str | None = None
-    roles: list[UserRole] = [UserRole.rider]
+
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+    )
+
+    roles: list[PublicUserRole] = Field(
+        default_factory=lambda: [PublicUserRole.rider]
+    )
 
 
 class UserResponse(BaseModel):

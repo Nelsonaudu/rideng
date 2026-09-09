@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.driver_profile import DriverProfile
 from app.models.rider_profile import RiderProfile
@@ -27,6 +28,27 @@ def get_user_roles(
     ).all()
 
 
+def build_user_response(
+    db: Session,
+    db_user: User,
+) -> UserResponse:
+    roles = get_user_roles(
+        db=db,
+        user_id=db_user.id,
+    )
+
+    return UserResponse(
+        id=db_user.id,
+        first_name=db_user.first_name,
+        last_name=db_user.last_name,
+        phone_number=db_user.phone_number,
+        email=db_user.email,
+        roles=roles,
+        is_active=db_user.is_active,
+        created_at=db_user.created_at,
+    )
+
+
 @router.post(
     "/users",
     response_model=UserResponse,
@@ -41,6 +63,7 @@ def create_user(
         last_name=user.last_name,
         phone_number=user.phone_number,
         email=user.email,
+        password_hash=hash_password(user.password),
     )
 
     db.add(db_user)
@@ -50,11 +73,11 @@ def create_user(
     role_values = [role.value for role in unique_roles]
 
     try:
-        # Insert the user first so PostgreSQL/SQLAlchemy
+        # Insert user first so PostgreSQL/SQLAlchemy
         # generates the user's UUID.
         db.flush()
 
-        # Store the user's roles.
+        # Store roles.
         for role_value in role_values:
             db.add(
                 UserRoleModel(
@@ -63,8 +86,8 @@ def create_user(
                 )
             )
 
-        # Automatically create a RiderProfile
-        # when the user has the rider role.
+        # Automatically create RiderProfile
+        # when the rider role is present.
         if "rider" in role_values:
             db.add(
                 RiderProfile(
@@ -72,8 +95,8 @@ def create_user(
                 )
             )
 
-        # Automatically create a DriverProfile
-        # when the user has the driver role.
+        # Automatically create DriverProfile
+        # when the driver role is present.
         if "driver" in role_values:
             db.add(
                 DriverProfile(
@@ -81,7 +104,6 @@ def create_user(
                 )
             )
 
-        # Save the complete account as one transaction.
         db.commit()
         db.refresh(db_user)
 
@@ -90,18 +112,15 @@ def create_user(
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A user with this phone number or email already exists.",
+            detail=(
+                "A user with this phone number "
+                "or email already exists."
+            ),
         ) from exc
 
-    return UserResponse(
-        id=db_user.id,
-        first_name=db_user.first_name,
-        last_name=db_user.last_name,
-        phone_number=db_user.phone_number,
-        email=db_user.email,
-        roles=unique_roles,
-        is_active=db_user.is_active,
-        created_at=db_user.created_at,
+    return build_user_response(
+        db=db,
+        db_user=db_user,
     )
 
 
@@ -113,31 +132,17 @@ def list_users(
     db: Session = Depends(get_db),
 ):
     users = db.scalars(
-        select(User).order_by(User.created_at)
+        select(User)
+        .order_by(User.created_at)
     ).all()
 
-    results = []
-
-    for db_user in users:
-        roles = get_user_roles(
+    return [
+        build_user_response(
             db=db,
-            user_id=db_user.id,
+            db_user=db_user,
         )
-
-        results.append(
-            UserResponse(
-                id=db_user.id,
-                first_name=db_user.first_name,
-                last_name=db_user.last_name,
-                phone_number=db_user.phone_number,
-                email=db_user.email,
-                roles=roles,
-                is_active=db_user.is_active,
-                created_at=db_user.created_at,
-            )
-        )
-
-    return results
+        for db_user in users
+    ]
 
 
 @router.get(
@@ -164,18 +169,7 @@ def get_user(
             detail="User not found.",
         )
 
-    roles = get_user_roles(
+    return build_user_response(
         db=db,
-        user_id=user_id,
-    )
-
-    return UserResponse(
-        id=db_user.id,
-        first_name=db_user.first_name,
-        last_name=db_user.last_name,
-        phone_number=db_user.phone_number,
-        email=db_user.email,
-        roles=roles,
-        is_active=db_user.is_active,
-        created_at=db_user.created_at,
+        db_user=db_user,
     )

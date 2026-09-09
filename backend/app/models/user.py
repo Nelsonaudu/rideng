@@ -41,6 +41,13 @@ class User(Base):
         index=True,
     )
 
+    # Nullable temporarily because existing development users
+    # were created before authentication was introduced.
+    password_hash: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
