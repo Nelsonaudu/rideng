@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.router import api_router
 from app.api.routes.compliance import router as compliance_router
+from app.api.routes.readiness import router as readiness_router
 from app.core.config import settings
 
 
@@ -23,15 +24,15 @@ def root():
     }
 
 
-# Existing RideNG API routes.
 app.include_router(
     api_router,
     prefix=settings.api_v1_prefix,
 )
 
-
-# Compliance routes already define their full /api/v1/... paths,
-# so no additional prefix is added here.
 app.include_router(
     compliance_router,
+)
+
+app.include_router(
+    readiness_router,
 )
