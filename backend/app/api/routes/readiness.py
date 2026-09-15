@@ -84,5 +84,9 @@ def read_vehicle_readiness(
             snapshot.vehicle_compliance_approved
         ),
         ride_eligible=snapshot.ride_eligible,
+        missing_or_invalid_vehicle_requirements=(
+            snapshot
+            .missing_or_invalid_vehicle_requirements
+        ),
         blockers=snapshot.blockers,
     )

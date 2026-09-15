@@ -21,4 +21,5 @@ class VehicleReadinessResponse(BaseModel):
     vehicle_compliance_approved: bool
     ride_eligible: bool
 
+    missing_or_invalid_vehicle_requirements: list[str]
     blockers: list[str]
