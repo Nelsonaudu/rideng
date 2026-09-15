@@ -5,12 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import (
-    ensure_self_or_admin,
-    get_current_user,
-    get_user_roles,
-    require_roles,
-)
+from app.api.deps import get_user_roles, require_roles
 from app.db.session import get_db
 from app.models.driver_document import DriverDocument
 from app.models.driver_profile import DriverProfile
@@ -31,6 +26,12 @@ from app.schemas.compliance import (
 
 
 router = APIRouter()
+
+
+COMPLIANCE_STAFF_ROLES = {
+    "admin",
+    "compliance_agent",
+}
 
 
 # ============================================================
@@ -74,7 +75,29 @@ def ensure_vehicle_exists(
     return vehicle
 
 
-def ensure_vehicle_owner_or_admin(
+def ensure_driver_compliance_access(
+    db: Session,
+    current_user: User,
+    driver_id: UUID,
+) -> None:
+    if current_user.id == driver_id:
+        return
+
+    roles = get_user_roles(
+        db=db,
+        user_id=current_user.id,
+    )
+
+    if roles.intersection(COMPLIANCE_STAFF_ROLES):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You cannot access another driver's compliance records.",
+    )
+
+
+def ensure_vehicle_compliance_access(
     db: Session,
     current_user: User,
     vehicle: Vehicle,
@@ -87,12 +110,12 @@ def ensure_vehicle_owner_or_admin(
         user_id=current_user.id,
     )
 
-    if "admin" in roles:
+    if roles.intersection(COMPLIANCE_STAFF_ROLES):
         return
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="You cannot access another driver's vehicle.",
+        detail="You cannot access another driver's vehicle compliance records.",
     )
 
 
@@ -109,6 +132,41 @@ def validate_document_dates(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Document expiry date cannot be earlier than issue date.",
         )
+
+
+def apply_document_verification(
+    db,
+    verification: DocumentVerificationUpdate,
+    current_user: User,
+    session: Session,
+):
+    new_status = verification.verification_status.value
+
+    if (
+        new_status == "rejected"
+        and not verification.rejection_reason
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "A rejection reason is required when rejecting "
+                "a document."
+            ),
+        )
+
+    db.verification_status = new_status
+    db.verified_by = current_user.id
+    db.verified_at = datetime.now(UTC)
+
+    if new_status == "rejected":
+        db.rejection_reason = verification.rejection_reason
+    else:
+        db.rejection_reason = None
+
+    session.commit()
+    session.refresh(db)
+
+    return db
 
 
 # ============================================================
@@ -138,10 +196,10 @@ def create_driver_document(
         driver_id=driver_id,
     )
 
-    ensure_self_or_admin(
-        current_user=current_user,
-        target_user_id=driver_id,
+    ensure_driver_compliance_access(
         db=db,
+        current_user=current_user,
+        driver_id=driver_id,
     )
 
     validate_document_dates(
@@ -172,6 +230,7 @@ def list_driver_documents(
         require_roles(
             "driver",
             "admin",
+            "compliance_agent",
         )
     ),
     db: Session = Depends(get_db),
@@ -181,10 +240,10 @@ def list_driver_documents(
         driver_id=driver_id,
     )
 
-    ensure_self_or_admin(
-        current_user=current_user,
-        target_user_id=driver_id,
+    ensure_driver_compliance_access(
         db=db,
+        current_user=current_user,
+        driver_id=driver_id,
     )
 
     documents = db.scalars(
@@ -227,7 +286,7 @@ def create_vehicle_document(
         vehicle_id=vehicle_id,
     )
 
-    ensure_vehicle_owner_or_admin(
+    ensure_vehicle_compliance_access(
         db=db,
         current_user=current_user,
         vehicle=vehicle,
@@ -261,6 +320,7 @@ def list_vehicle_documents(
         require_roles(
             "driver",
             "admin",
+            "compliance_agent",
         )
     ),
     db: Session = Depends(get_db),
@@ -270,7 +330,7 @@ def list_vehicle_documents(
         vehicle_id=vehicle_id,
     )
 
-    ensure_vehicle_owner_or_admin(
+    ensure_vehicle_compliance_access(
         db=db,
         current_user=current_user,
         vehicle=vehicle,
@@ -290,20 +350,28 @@ def list_vehicle_documents(
 
 
 # ============================================================
-# ADMIN - DRIVER DOCUMENT VERIFICATION
+# DRIVER DOCUMENT VERIFICATION
 # ============================================================
 
 
 @router.patch(
     "/api/v1/admin/driver-documents/{document_id}/verification",
     response_model=DriverDocumentResponse,
-    tags=["Compliance Admin"],
+    include_in_schema=False,
+)
+@router.patch(
+    "/api/v1/compliance/driver-documents/{document_id}/verification",
+    response_model=DriverDocumentResponse,
+    tags=["Compliance Staff"],
 )
 def verify_driver_document(
     document_id: UUID,
     verification: DocumentVerificationUpdate,
     current_user: User = Depends(
-        require_roles("admin")
+        require_roles(
+            "admin",
+            "compliance_agent",
+        )
     ),
     db: Session = Depends(get_db),
 ):
@@ -318,49 +386,37 @@ def verify_driver_document(
             detail="Driver document not found.",
         )
 
-    new_status = verification.verification_status.value
-
-    if (
-        new_status == "rejected"
-        and not verification.rejection_reason
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="A rejection reason is required when rejecting a document.",
-        )
-
-    db_document.verification_status = new_status
-    db_document.verified_by = current_user.id
-    db_document.verified_at = datetime.now(UTC)
-
-    if new_status == "rejected":
-        db_document.rejection_reason = (
-            verification.rejection_reason
-        )
-    else:
-        db_document.rejection_reason = None
-
-    db.commit()
-    db.refresh(db_document)
-
-    return db_document
+    return apply_document_verification(
+        db=db_document,
+        verification=verification,
+        current_user=current_user,
+        session=db,
+    )
 
 
 # ============================================================
-# ADMIN - VEHICLE DOCUMENT VERIFICATION
+# VEHICLE DOCUMENT VERIFICATION
 # ============================================================
 
 
 @router.patch(
     "/api/v1/admin/vehicle-documents/{document_id}/verification",
     response_model=VehicleDocumentResponse,
-    tags=["Compliance Admin"],
+    include_in_schema=False,
+)
+@router.patch(
+    "/api/v1/compliance/vehicle-documents/{document_id}/verification",
+    response_model=VehicleDocumentResponse,
+    tags=["Compliance Staff"],
 )
 def verify_vehicle_document(
     document_id: UUID,
     verification: DocumentVerificationUpdate,
     current_user: User = Depends(
-        require_roles("admin")
+        require_roles(
+            "admin",
+            "compliance_agent",
+        )
     ),
     db: Session = Depends(get_db),
 ):
@@ -375,32 +431,12 @@ def verify_vehicle_document(
             detail="Vehicle document not found.",
         )
 
-    new_status = verification.verification_status.value
-
-    if (
-        new_status == "rejected"
-        and not verification.rejection_reason
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="A rejection reason is required when rejecting a document.",
-        )
-
-    db_document.verification_status = new_status
-    db_document.verified_by = current_user.id
-    db_document.verified_at = datetime.now(UTC)
-
-    if new_status == "rejected":
-        db_document.rejection_reason = (
-            verification.rejection_reason
-        )
-    else:
-        db_document.rejection_reason = None
-
-    db.commit()
-    db.refresh(db_document)
-
-    return db_document
+    return apply_document_verification(
+        db=db_document,
+        verification=verification,
+        current_user=current_user,
+        session=db,
+    )
 
 
 # ============================================================
@@ -412,13 +448,22 @@ def verify_vehicle_document(
     "/api/v1/admin/vehicles/{vehicle_id}/inspections",
     response_model=VehicleInspectionResponse,
     status_code=status.HTTP_201_CREATED,
-    tags=["Compliance Admin"],
+    include_in_schema=False,
+)
+@router.post(
+    "/api/v1/compliance/vehicles/{vehicle_id}/inspections",
+    response_model=VehicleInspectionResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Compliance Staff"],
 )
 def create_vehicle_inspection(
     vehicle_id: UUID,
     inspection: VehicleInspectionCreate,
     current_user: User = Depends(
-        require_roles("admin")
+        require_roles(
+            "admin",
+            "compliance_agent",
+        )
     ),
     db: Session = Depends(get_db),
 ):
@@ -427,7 +472,6 @@ def create_vehicle_inspection(
         vehicle_id=vehicle_id,
     )
 
-    # Prevent duplicate open inspection records for the same vehicle.
     existing_pending_inspection = db.scalar(
         select(VehicleInspection).where(
             VehicleInspection.vehicle_id == vehicle_id,
@@ -443,12 +487,7 @@ def create_vehicle_inspection(
 
     db_inspection = VehicleInspection(
         vehicle_id=vehicle_id,
-
-        # Do not assign an inspector merely because an admin
-        # created the pending record. The actual reviewer is
-        # recorded when the inspection result is entered.
         inspector_id=None,
-
         status="pending_inspection",
         **inspection.model_dump(),
     )
@@ -471,6 +510,7 @@ def list_vehicle_inspections(
         require_roles(
             "driver",
             "admin",
+            "compliance_agent",
         )
     ),
     db: Session = Depends(get_db),
@@ -480,7 +520,7 @@ def list_vehicle_inspections(
         vehicle_id=vehicle_id,
     )
 
-    ensure_vehicle_owner_or_admin(
+    ensure_vehicle_compliance_access(
         db=db,
         current_user=current_user,
         vehicle=vehicle,
@@ -502,13 +542,21 @@ def list_vehicle_inspections(
 @router.patch(
     "/api/v1/admin/vehicle-inspections/{inspection_id}",
     response_model=VehicleInspectionResponse,
-    tags=["Compliance Admin"],
+    include_in_schema=False,
+)
+@router.patch(
+    "/api/v1/compliance/vehicle-inspections/{inspection_id}",
+    response_model=VehicleInspectionResponse,
+    tags=["Compliance Staff"],
 )
 def update_vehicle_inspection(
     inspection_id: UUID,
     inspection: VehicleInspectionUpdate,
     current_user: User = Depends(
-        require_roles("admin")
+        require_roles(
+            "admin",
+            "compliance_agent",
+        )
     ),
     db: Session = Depends(get_db),
 ):
@@ -546,8 +594,6 @@ def update_vehicle_inspection(
             detail="Invalid vehicle inspection status.",
         )
 
-    # Failed inspections and inspections requiring corrective
-    # work must explain what was wrong.
     if new_status in {
         "failed",
         "reinspection_required",
@@ -575,12 +621,9 @@ def update_vehicle_inspection(
             value,
         )
 
-    # The user recording the inspection outcome becomes the
-    # recorded inspector/reviewer for this inspection.
     db_inspection.inspector_id = current_user.id
     db_inspection.updated_at = datetime.now(UTC)
 
-    # These statuses represent a completed physical inspection.
     completed_outcomes = {
         "passed",
         "failed",

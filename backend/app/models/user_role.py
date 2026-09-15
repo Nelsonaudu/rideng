@@ -12,7 +12,10 @@ class UserRole(Base):
 
     user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
         primary_key=True,
     )
 
@@ -23,7 +26,14 @@ class UserRole(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('rider', 'driver', 'admin')",
+            (
+                "role IN ("
+                "'rider', "
+                "'driver', "
+                "'admin', "
+                "'compliance_agent'"
+                ")"
+            ),
             name="ck_user_roles_role",
         ),
     )

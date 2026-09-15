@@ -27,6 +27,8 @@ VehicleInspectionStatus = Literal[
 
 
 class DriverDocumentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     document_type: str = Field(
         min_length=2,
         max_length=100,
@@ -87,6 +89,8 @@ class DriverDocumentResponse(BaseModel):
 
 
 class VehicleDocumentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     document_type: str = Field(
         min_length=2,
         max_length=100,
@@ -147,6 +151,8 @@ class VehicleDocumentResponse(BaseModel):
 
 
 class DocumentVerificationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     verification_status: VerificationStatus
 
     rejection_reason: str | None = Field(
@@ -162,13 +168,14 @@ class DocumentVerificationUpdate(BaseModel):
 
 class VehicleInspectionCreate(BaseModel):
     """
-    Creates the pending inspection record.
+    Creates a pending physical inspection record.
 
-    Physical findings such as odometer reading, checklist results,
-    evidence and outcome are intentionally NOT accepted here.
-    Those belong to VehicleInspectionUpdate after the vehicle has
-    actually been inspected.
+    Physical findings are deliberately excluded here because they
+    belong to VehicleInspectionUpdate after an inspection actually
+    takes place.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     inspection_type: str = Field(
         default="initial",
@@ -199,15 +206,15 @@ class VehicleInspectionCreate(BaseModel):
 
 class VehicleInspectionUpdate(BaseModel):
     """
-    Records or updates the physical inspection outcome.
+    Records or updates a physical inspection outcome.
 
-    inspected_at is deliberately excluded because the server records
-    the completion timestamp when an inspection outcome is entered.
+    inspected_at and inspector_id remain server controlled.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     status: VehicleInspectionStatus | None = None
 
-    # May later be calculated automatically from market policy.
     expires_at: datetime | None = None
 
     inspection_location: str | None = Field(
