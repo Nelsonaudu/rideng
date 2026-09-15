@@ -5,6 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import (
+    ensure_self_or_admin,
+    get_current_user,
+    require_roles,
+)
 from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.driver_profile import DriverProfile
@@ -73,7 +78,7 @@ def create_user(
     role_values = [role.value for role in unique_roles]
 
     try:
-        # Insert user first so PostgreSQL/SQLAlchemy
+        # Insert the user first so PostgreSQL/SQLAlchemy
         # generates the user's UUID.
         db.flush()
 
@@ -130,6 +135,7 @@ def create_user(
 )
 def list_users(
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin")),
 ):
     users = db.scalars(
         select(User)
@@ -149,15 +155,27 @@ def list_users(
     "/users/{user_id}",
     response_model=UserResponse,
     responses={
+        403: {
+            "description": "Forbidden",
+        },
         404: {
             "description": "User not found",
-        }
+        },
     },
 )
 def get_user(
     user_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    # A normal user may access only their own account.
+    # An administrator may access any account.
+    ensure_self_or_admin(
+        current_user=current_user,
+        target_user_id=user_id,
+        db=db,
+    )
+
     db_user = db.get(
         User,
         user_id,

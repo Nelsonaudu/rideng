@@ -5,8 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import (
+    ensure_self_or_admin,
+    get_current_user,
+    require_roles,
+)
 from app.db.session import get_db
 from app.models.driver_profile import DriverProfile
+from app.models.user import User
 from app.models.vehicle import Vehicle
 from app.schemas.vehicle import VehicleCreate, VehicleResponse
 
@@ -23,7 +29,16 @@ def create_vehicle(
     driver_id: UUID,
     vehicle: VehicleCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_roles("driver")
+    ),
 ):
+    if current_user.id != driver_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Drivers can only create vehicles for themselves.",
+        )
+
     driver_profile = db.get(
         DriverProfile,
         driver_id,
@@ -68,7 +83,14 @@ def create_vehicle(
 def list_driver_vehicles(
     driver_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    ensure_self_or_admin(
+        current_user=current_user,
+        target_user_id=driver_id,
+        db=db,
+    )
+
     driver_profile = db.get(
         DriverProfile,
         driver_id,

@@ -4,8 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import (
+    ensure_self_or_admin,
+    get_current_user,
+    require_roles,
+)
 from app.db.session import get_db
 from app.models.driver_profile import DriverProfile
+from app.models.user import User
 from app.models.vehicle import Vehicle
 from app.schemas.driver import (
     DriverOnlineStatusUpdate,
@@ -23,7 +29,14 @@ router = APIRouter()
 def get_driver_profile(
     user_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    ensure_self_or_admin(
+        current_user=current_user,
+        target_user_id=user_id,
+        db=db,
+    )
+
     driver_profile = db.get(
         DriverProfile,
         user_id,
@@ -46,7 +59,16 @@ def update_driver_online_status(
     user_id: UUID,
     payload: DriverOnlineStatusUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_roles("driver")
+    ),
 ):
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Drivers can only change their own online status.",
+        )
+
     driver_profile = db.get(
         DriverProfile,
         user_id,
