@@ -1,6 +1,13 @@
 from fastapi import APIRouter
 
-from app.api.routes import auth, drivers, health, users, vehicles
+from app.api.routes import (
+    auth,
+    drivers,
+    health,
+    rides,
+    users,
+    vehicles,
+)
 
 
 api_router = APIRouter()
@@ -33,4 +40,10 @@ api_router.include_router(
 api_router.include_router(
     vehicles.router,
     tags=["Vehicles"],
+)
+
+
+api_router.include_router(
+    rides.router,
+    tags=["Rides"],
 )
