@@ -47,3 +47,9 @@ api_router.include_router(
     rides.router,
     tags=["Rides"],
 )
+
+
+api_router.include_router(
+    rides.offer_router,
+    tags=["Ride Offers"],
+)

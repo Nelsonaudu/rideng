@@ -131,3 +131,39 @@ class RideRequestResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime | None
+
+
+class RideOfferCounterCreate(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid"
+    )
+
+    counteroffer_fare: Decimal = Field(
+        gt=Decimal("0"),
+    )
+
+
+class RideOfferResponse(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
+    id: UUID
+
+    ride_request_id: UUID
+    driver_id: UUID
+    vehicle_id: UUID
+
+    rider_offer_fare: (
+        Decimal | None
+    )
+
+    driver_counteroffer_fare: (
+        Decimal | None
+    )
+
+    status: str
+
+    offered_at: datetime
+    expires_at: datetime
+    responded_at: datetime | None
