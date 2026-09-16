@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     status,
 )
@@ -24,10 +25,26 @@ from app.models.ride_request import (
 )
 from app.models.user import User
 from app.schemas.rides import (
+    RideAssignmentResponse,
     RideOfferCounterCreate,
     RideOfferResponse,
     RideRequestCreate,
     RideRequestResponse,
+)
+from app.services.idempotency import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    IdempotencyKeyError,
+    execute_idempotently,
+)
+from app.services.ride_assignment import (
+    RideAssignmentConflictError,
+    RideAssignmentEligibilityError,
+    RideAssignmentModeError,
+    RideAssignmentOfferError,
+    RideAssignmentResult,
+    assign_quick_ride,
+    select_negotiated_offer,
 )
 from app.services.ride_offers import (
     RideOfferExpiredError,
@@ -118,6 +135,51 @@ def _get_offer_request_or_404(
     return ride_request
 
 
+def _assignment_payload(
+    result: RideAssignmentResult,
+) -> dict:
+    return (
+        RideAssignmentResponse(
+            assignment_id=(
+                result.assignment.id
+            ),
+            ride_request_id=(
+                result.ride_request.id
+            ),
+            trip_id=result.trip.id,
+            driver_id=(
+                result.assignment.driver_id
+            ),
+            vehicle_id=(
+                result.assignment.vehicle_id
+            ),
+            matched_fare=(
+                result.matched_fare
+            ),
+            trip_status=(
+                result.trip.status
+            ),
+        )
+        .model_dump(
+            mode="json"
+        )
+    )
+
+
+def _offer_payload(
+    offer: RideOffer,
+) -> dict:
+    return (
+        RideOfferResponse
+        .model_validate(
+            offer
+        )
+        .model_dump(
+            mode="json"
+        )
+    )
+
+
 def _raise_offer_error(
     *,
     exc: Exception,
@@ -136,7 +198,44 @@ def _raise_offer_error(
 
     if isinstance(
         exc,
-        RideOfferModeError,
+        (
+            RideOfferModeError,
+            RideOfferExpiredError,
+            RideOfferStateError,
+        ),
+    ):
+        raise HTTPException(
+            status_code=(
+                status.HTTP_409_CONFLICT
+            ),
+            detail=str(exc),
+        ) from exc
+
+    raise exc
+
+
+def _raise_assignment_error(
+    *,
+    exc: Exception,
+) -> None:
+    if isinstance(
+        exc,
+        RideAssignmentEligibilityError,
+    ):
+        raise HTTPException(
+            status_code=(
+                status.HTTP_403_FORBIDDEN
+            ),
+            detail=str(exc),
+        ) from exc
+
+    if isinstance(
+        exc,
+        (
+            RideAssignmentConflictError,
+            RideAssignmentModeError,
+            RideAssignmentOfferError,
+        ),
     ):
         raise HTTPException(
             status_code=(
@@ -147,9 +246,20 @@ def _raise_offer_error(
 
     if isinstance(
         exc,
+        IdempotencyKeyError,
+    ):
+        raise HTTPException(
+            status_code=(
+                status.HTTP_400_BAD_REQUEST
+            ),
+            detail=str(exc),
+        ) from exc
+
+    if isinstance(
+        exc,
         (
-            RideOfferExpiredError,
-            RideOfferStateError,
+            IdempotencyConflictError,
+            IdempotencyInProgressError,
         ),
     ):
         raise HTTPException(
@@ -341,6 +451,81 @@ def get_ride_offers(
     return offers
 
 
+@router.post(
+    "/{ride_request_id}/offers/{offer_id}/select",
+    response_model=(
+        RideAssignmentResponse
+    ),
+)
+def select_offer(
+    ride_request_id: UUID,
+    offer_id: UUID,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+    ),
+    db: Session = Depends(
+        get_db
+    ),
+    current_user: User = Depends(
+        require_roles("rider")
+    ),
+):
+    try:
+        result = execute_idempotently(
+            db=db,
+            user_id=current_user.id,
+            operation=(
+                "select_negotiated_offer"
+            ),
+            idempotency_key=(
+                idempotency_key
+            ),
+            request_payload={
+                "ride_request_id": str(
+                    ride_request_id
+                ),
+                "offer_id": str(
+                    offer_id
+                ),
+            },
+            action=lambda: (
+                200,
+                _assignment_payload(
+                    select_negotiated_offer(
+                        db=db,
+                        ride_request_id=(
+                            ride_request_id
+                        ),
+                        offer_id=offer_id,
+                        rider_id=(
+                            current_user.id
+                        ),
+                    )
+                ),
+            ),
+        )
+
+        db.commit()
+
+        return result.body
+
+    except (
+        RideAssignmentConflictError,
+        RideAssignmentEligibilityError,
+        RideAssignmentModeError,
+        RideAssignmentOfferError,
+        IdempotencyKeyError,
+        IdempotencyConflictError,
+        IdempotencyInProgressError,
+    ) as exc:
+        db.rollback()
+
+        _raise_assignment_error(
+            exc=exc,
+        )
+
+
 @offer_router.get(
     "",
     response_model=list[
@@ -386,12 +571,13 @@ def get_driver_offers(
 
 @offer_router.post(
     "/{offer_id}/accept",
-    response_model=(
-        RideOfferResponse
-    ),
 )
 def accept_driver_offer(
     offer_id: UUID,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
     db: Session = Depends(
         get_db
     ),
@@ -412,6 +598,81 @@ def accept_driver_offer(
         )
     )
 
+    if (
+        ride_request.ride_mode
+        == "quick_ride"
+    ):
+        if idempotency_key is None:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_400_BAD_REQUEST
+                ),
+                detail=(
+                    "Idempotency-Key is required "
+                    "for Quick Ride acceptance."
+                ),
+            )
+
+        try:
+            result = (
+                execute_idempotently(
+                    db=db,
+                    user_id=(
+                        current_user.id
+                    ),
+                    operation=(
+                        "accept_quick_ride"
+                    ),
+                    idempotency_key=(
+                        idempotency_key
+                    ),
+                    request_payload={
+                        "offer_id": str(
+                            offer_id
+                        ),
+                        "ride_request_id": str(
+                            ride_request.id
+                        ),
+                    },
+                    action=lambda: (
+                        200,
+                        _offer_payload(
+                            assign_quick_ride(
+                                db=db,
+                                ride_request_id=(
+                                    ride_request.id
+                                ),
+                                offer_id=(
+                                    offer_id
+                                ),
+                                driver_id=(
+                                    current_user.id
+                                ),
+                            ).offer
+                        ),
+                    ),
+                )
+            )
+
+            db.commit()
+
+            return result.body
+
+        except (
+            RideAssignmentConflictError,
+            RideAssignmentEligibilityError,
+            RideAssignmentModeError,
+            RideAssignmentOfferError,
+            IdempotencyKeyError,
+            IdempotencyConflictError,
+            IdempotencyInProgressError,
+        ) as exc:
+            db.rollback()
+
+            _raise_assignment_error(
+                exc=exc,
+            )
+
     try:
         accept_offer(
             offer=offer,
@@ -423,7 +684,12 @@ def accept_driver_offer(
             offer
         )
 
-        return offer
+        return (
+            RideOfferResponse
+            .model_validate(
+                offer
+            )
+        )
 
     except (
         RideOfferExpiredError,

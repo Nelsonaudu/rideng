@@ -167,3 +167,19 @@ class RideOfferResponse(BaseModel):
     offered_at: datetime
     expires_at: datetime
     responded_at: datetime | None
+
+
+class RideAssignmentResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid"
+    )
+
+    assignment_id: UUID
+    ride_request_id: UUID
+    trip_id: UUID
+
+    driver_id: UUID
+    vehicle_id: UUID
+
+    matched_fare: Decimal
+    trip_status: str
