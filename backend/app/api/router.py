@@ -5,6 +5,7 @@ from app.api.routes import (
     drivers,
     health,
     rides,
+    trips,
     users,
     vehicles,
 )
@@ -52,4 +53,10 @@ api_router.include_router(
 api_router.include_router(
     rides.offer_router,
     tags=["Ride Offers"],
+)
+
+
+api_router.include_router(
+    trips.router,
+    tags=["Trips"],
 )
