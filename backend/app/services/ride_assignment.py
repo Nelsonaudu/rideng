@@ -302,10 +302,7 @@ def close_competing_offers(
             candidate.id
             == winning_offer_id
         ):
-            candidate.status = (
-                "selected"
-            )
-
+            candidate.status = "selected"
             continue
 
         if candidate.status in {
@@ -313,9 +310,122 @@ def close_competing_offers(
             "accepted",
             "countered",
         }:
-            candidate.status = (
-                "closed"
-            )
+            candidate.status = "closed"
+
+
+def _prepare_trip_for_assignment(
+    *,
+    db: Session,
+    ride_request: RideRequest,
+    assignment: DriverAssignment,
+    matched_fare: Decimal,
+    now: datetime,
+) -> tuple[
+    Trip,
+    bool,
+]:
+    trip = db.scalar(
+        select(
+            Trip
+        )
+        .where(
+            Trip.ride_request_id
+            == ride_request.id
+        )
+        .with_for_update()
+    )
+
+    if trip is None:
+        trip = Trip(
+            ride_request_id=(
+                ride_request.id
+            ),
+            active_assignment_id=(
+                assignment.id
+            ),
+            rider_id=(
+                ride_request.rider_id
+            ),
+            status="matched",
+            agreed_fare=matched_fare,
+            payment_method=(
+                ride_request
+                .payment_method
+            ),
+            matched_at=now,
+        )
+
+        db.add(
+            trip
+        )
+
+        try:
+            db.flush()
+
+        except IntegrityError as exc:
+            raise RideAssignmentConflictError(
+                "Ride already has a trip."
+            ) from exc
+
+        return (
+            trip,
+            False,
+        )
+
+    if (
+        trip.active_assignment_id
+        is not None
+    ):
+        raise RideAssignmentConflictError(
+            "Ride already has an "
+            "active assignment."
+        )
+
+    if (
+        trip.status
+        != "matched"
+    ):
+        raise RideAssignmentConflictError(
+            "Existing trip cannot "
+            "be rematched in its "
+            "current state."
+        )
+
+    if (
+        trip.started_at
+        is not None
+        or trip.completed_at
+        is not None
+    ):
+        raise RideAssignmentConflictError(
+            "Started or completed trip "
+            "cannot be rematched."
+        )
+
+    trip.active_assignment_id = (
+        assignment.id
+    )
+
+    trip.status = "matched"
+    trip.agreed_fare = matched_fare
+
+    trip.payment_method = (
+        ride_request.payment_method
+    )
+
+    trip.matched_at = now
+
+    trip.driver_arriving_at = None
+    trip.arrived_at = None
+    trip.started_at = None
+    trip.completed_at = None
+
+    db.flush()
+
+    return (
+        trip,
+        True,
+    )
 
 
 def _finalize_assignment(
@@ -338,6 +448,8 @@ def _finalize_assignment(
         vehicle_id=offer.vehicle_id,
     )
 
+    now = datetime.now(UTC)
+
     assignment = DriverAssignment(
         ride_request_id=(
             ride_request.id
@@ -346,7 +458,7 @@ def _finalize_assignment(
         vehicle_id=offer.vehicle_id,
         ride_offer_id=offer.id,
         status="active",
-        assigned_at=datetime.now(UTC),
+        assigned_at=now,
     )
 
     db.add(
@@ -362,35 +474,16 @@ def _finalize_assignment(
             "an active assignment."
         ) from exc
 
-    trip = Trip(
-        ride_request_id=(
-            ride_request.id
-        ),
-        active_assignment_id=(
-            assignment.id
-        ),
-        rider_id=(
-            ride_request.rider_id
-        ),
-        status="matched",
-        agreed_fare=matched_fare,
-        payment_method=(
-            ride_request.payment_method
-        ),
-        matched_at=datetime.now(UTC),
+    (
+        trip,
+        is_rematch,
+    ) = _prepare_trip_for_assignment(
+        db=db,
+        ride_request=ride_request,
+        assignment=assignment,
+        matched_fare=matched_fare,
+        now=now,
     )
-
-    db.add(
-        trip
-    )
-
-    try:
-        db.flush()
-
-    except IntegrityError as exc:
-        raise RideAssignmentConflictError(
-            "Ride already has a trip."
-        ) from exc
 
     stops = db.scalars(
         select(
@@ -409,6 +502,7 @@ def _finalize_assignment(
         stop.trip_id = trip.id
 
     ride_request.status = "matched"
+
     ride_request.matched_fare = (
         matched_fare
     )
@@ -427,9 +521,13 @@ def _finalize_assignment(
                 ride_request.id
             ),
             trip_id=trip.id,
-            actor_user_id=actor_user_id,
+            actor_user_id=(
+                actor_user_id
+            ),
             event_type=(
-                "driver_assigned"
+                "driver_reassigned"
+                if is_rematch
+                else "driver_assigned"
             ),
             event_data={
                 "assignment_id": str(
@@ -444,6 +542,9 @@ def _finalize_assignment(
                 "offer_id": str(
                     offer.id
                 ),
+                "rematch": (
+                    is_rematch
+                ),
             },
         )
     )
@@ -454,7 +555,9 @@ def _finalize_assignment(
                 ride_request.id
             ),
             trip_id=trip.id,
-            actor_user_id=actor_user_id,
+            actor_user_id=(
+                actor_user_id
+            ),
             event_type="trip_matched",
             event_data={
                 "matched_fare": str(
@@ -463,6 +566,9 @@ def _finalize_assignment(
                 "payment_method": (
                     ride_request
                     .payment_method
+                ),
+                "rematch": (
+                    is_rematch
                 ),
             },
         )

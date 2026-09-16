@@ -4,6 +4,7 @@ from app.api.routes import (
     auth,
     drivers,
     health,
+    ride_cancellation,
     rides,
     trip_verification,
     trips,
@@ -66,4 +67,18 @@ api_router.include_router(
 api_router.include_router(
     trip_verification.router,
     tags=["Trip Verification"],
+)
+
+
+api_router.include_router(
+    ride_cancellation.ride_router,
+    tags=["Ride Cancellation"],
+)
+
+
+api_router.include_router(
+    ride_cancellation.trip_router,
+    tags=[
+        "Trip Cancellation and No-Show"
+    ],
 )
