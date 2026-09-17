@@ -21,6 +21,9 @@ from app.models.ride_request import (
 )
 from app.models.trip import Trip
 from app.models.trip_event import TripEvent
+from app.models.trip_location_verification import (
+    TripLocationVerificationState,
+)
 from app.models.trip_start_verification import (
     TripStartVerification,
 )
@@ -36,6 +39,11 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     IdempotencyKeyError,
     execute_idempotently,
+)
+from app.services.pickup_location import (
+    has_verified_pickup_arrival,
+    has_verified_pickup_progress,
+    redact_location_for_assignment,
 )
 from app.services.ride_cancellation import (
     DriverCancellationStateError,
@@ -206,28 +214,59 @@ def _lock_verification(
     )
 
 
-def _has_event(
+def _lock_pickup_location_state(
     *,
     db: Session,
     trip_id: UUID,
-    event_type: str,
-) -> bool:
-    event_id = db.scalar(
+) -> TripLocationVerificationState | None:
+    return db.scalar(
         select(
-            TripEvent.id
+            TripLocationVerificationState
         )
         .where(
-            TripEvent.trip_id
-            == trip_id,
-            TripEvent.event_type
-            == event_type,
+            TripLocationVerificationState
+            .trip_id
+            == trip_id
         )
-        .limit(1)
+        .with_for_update()
     )
 
-    return (
-        event_id
-        is not None
+
+def _pickup_progress_is_verified(
+    *,
+    db: Session,
+    trip_id: UUID,
+    assignment_id: UUID,
+) -> bool:
+    verification_state = (
+        _lock_pickup_location_state(
+            db=db,
+            trip_id=trip_id,
+        )
+    )
+
+    return has_verified_pickup_progress(
+        state=verification_state,
+        assignment_id=assignment_id,
+    )
+
+
+def _pickup_arrival_is_verified(
+    *,
+    db: Session,
+    trip_id: UUID,
+    assignment_id: UUID,
+) -> bool:
+    verification_state = (
+        _lock_pickup_location_state(
+            db=db,
+            trip_id=trip_id,
+        )
+    )
+
+    return has_verified_pickup_arrival(
+        state=verification_state,
+        assignment_id=assignment_id,
     )
 
 
@@ -390,15 +429,25 @@ def cancel_rider_ride(
             )
         )
 
+        location_state = None
         progress_verified = False
 
-        if trip is not None:
-            progress_verified = (
-                _has_event(
+        if (
+            trip is not None
+            and assignment is not None
+        ):
+            location_state = (
+                _lock_pickup_location_state(
                     db=db,
                     trip_id=trip.id,
-                    event_type=(
-                        "pickup_progress_verified"
+                )
+            )
+
+            progress_verified = (
+                has_verified_pickup_progress(
+                    state=location_state,
+                    assignment_id=(
+                        assignment.id
                     ),
                 )
             )
@@ -413,6 +462,14 @@ def cancel_rider_ride(
                 progress_verified
             ),
         )
+
+        if assignment is not None:
+            redact_location_for_assignment(
+                state=location_state,
+                assignment_id=(
+                    assignment.id
+                ),
+            )
 
         _close_unmatched_offers(
             db=db,
@@ -442,6 +499,14 @@ def cancel_rider_ride(
                 ),
                 "driver_progress_verified": (
                     progress_verified
+                ),
+                "assignment_id": (
+                    str(
+                        assignment.id
+                    )
+                    if assignment
+                    is not None
+                    else None
                 ),
             },
         )
@@ -594,6 +659,13 @@ def cancel_driver_assignment(
             )
         )
 
+        location_state = (
+            _lock_pickup_location_state(
+                db=db,
+                trip_id=trip.id,
+            )
+        )
+
         cancel_driver_assignment_for_rematch(
             ride_request=ride_request,
             trip=trip,
@@ -601,6 +673,13 @@ def cancel_driver_assignment(
             offer=offer,
             verification=verification,
             reason=payload.reason,
+        )
+
+        redact_location_for_assignment(
+            state=location_state,
+            assignment_id=(
+                assignment.id
+            ),
         )
 
         _add_event(
@@ -781,12 +860,18 @@ def declare_rider_no_show(
             )
         )
 
-        arrival_verified = (
-            _has_event(
+        location_state = (
+            _lock_pickup_location_state(
                 db=db,
                 trip_id=trip.id,
-                event_type=(
-                    "pickup_arrival_verified"
+            )
+        )
+
+        arrival_verified = (
+            has_verified_pickup_arrival(
+                state=location_state,
+                assignment_id=(
+                    assignment.id
                 ),
             )
         )
@@ -801,6 +886,13 @@ def declare_rider_no_show(
             ),
         )
 
+        redact_location_for_assignment(
+            state=location_state,
+            assignment_id=(
+                assignment.id
+            ),
+        )
+
         _add_event(
             db=db,
             ride_request_id=(
@@ -812,6 +904,9 @@ def declare_rider_no_show(
             ),
             event_type="rider_no_show",
             event_data={
+                "assignment_id": str(
+                    assignment.id
+                ),
                 "arrival_verified": (
                     arrival_verified
                 ),

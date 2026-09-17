@@ -4,6 +4,7 @@ from app.api.routes import (
     auth,
     drivers,
     health,
+    pickup_location,
     ride_cancellation,
     rides,
     trip_verification,
@@ -67,6 +68,14 @@ api_router.include_router(
 api_router.include_router(
     trip_verification.router,
     tags=["Trip Verification"],
+)
+
+
+api_router.include_router(
+    pickup_location.router,
+    tags=[
+        "Pickup Location Verification"
+    ],
 )
 
 

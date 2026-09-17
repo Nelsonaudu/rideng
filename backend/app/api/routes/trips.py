@@ -18,8 +18,8 @@ from app.models.driver_assignment import (
     DriverAssignment,
 )
 from app.models.trip import Trip
-from app.models.trip_event import (
-    TripEvent,
+from app.models.trip_location_verification import (
+    TripLocationVerificationState,
 )
 from app.models.user import User
 from app.schemas.trips import (
@@ -30,6 +30,9 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     IdempotencyKeyError,
     execute_idempotently,
+)
+from app.services.pickup_location import (
+    redact_location_for_assignment,
 )
 from app.services.trip_state import (
     TripArrivalVerificationError,
@@ -158,28 +161,49 @@ def _require_active_driver(
     return assignment
 
 
+def _lock_pickup_location_state(
+    *,
+    db: Session,
+    trip_id: UUID,
+) -> TripLocationVerificationState | None:
+    return db.scalar(
+        select(
+            TripLocationVerificationState
+        )
+        .where(
+            TripLocationVerificationState
+            .trip_id
+            == trip_id
+        )
+        .with_for_update()
+    )
+
+
 def _pickup_arrival_is_verified(
     *,
     db: Session,
     trip_id: UUID,
+    assignment_id: UUID,
 ) -> bool:
-    verified_event_id = db.scalar(
-        select(
-            TripEvent.id
+    verification_state = (
+        _lock_pickup_location_state(
+            db=db,
+            trip_id=trip_id,
         )
-        .where(
-            TripEvent.trip_id
-            == trip_id,
-            TripEvent.event_type
-            == (
-                "pickup_arrival_verified"
-            ),
-        )
-        .limit(1)
     )
 
+    if verification_state is None:
+        return False
+
+    if (
+        verification_state.assignment_id
+        != assignment_id
+    ):
+        return False
+
     return (
-        verified_event_id
+        verification_state
+        .arrival_verified_at
         is not None
     )
 
@@ -331,16 +355,23 @@ def driver_arrived(
             trip_id=trip_id,
         )
 
-        _require_active_driver(
-            db=db,
-            trip=trip,
-            driver_id=current_user.id,
+        assignment = (
+            _require_active_driver(
+                db=db,
+                trip=trip,
+                driver_id=(
+                    current_user.id
+                ),
+            )
         )
 
         arrival_verified = (
             _pickup_arrival_is_verified(
                 db=db,
                 trip_id=trip.id,
+                assignment_id=(
+                    assignment.id
+                ),
             )
         )
 
@@ -429,10 +460,21 @@ def complete_trip(
             trip_id=trip_id,
         )
 
-        _require_active_driver(
-            db=db,
-            trip=trip,
-            driver_id=current_user.id,
+        assignment = (
+            _require_active_driver(
+                db=db,
+                trip=trip,
+                driver_id=(
+                    current_user.id
+                ),
+            )
+        )
+
+        location_state = (
+            _lock_pickup_location_state(
+                db=db,
+                trip_id=trip.id,
+            )
         )
 
         transition_trip(
@@ -446,6 +488,13 @@ def complete_trip(
             ),
             event_type=(
                 "trip_completed"
+            ),
+        )
+
+        redact_location_for_assignment(
+            state=location_state,
+            assignment_id=(
+                assignment.id
             ),
         )
 
