@@ -8,6 +8,7 @@ from app.api.routes import (
     ride_cancellation,
     rides,
     trip_verification,
+    trip_stops,
     trips,
     users,
     vehicles,
@@ -68,6 +69,12 @@ api_router.include_router(
 api_router.include_router(
     trip_verification.router,
     tags=["Trip Verification"],
+)
+
+
+api_router.include_router(
+    trip_stops.router,
+    tags=["Trip Stop Execution"],
 )
 
 
