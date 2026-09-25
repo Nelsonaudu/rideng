@@ -80,7 +80,7 @@
 - Modify: `backend/tests/test_ride_policy.py`
 
 **Interfaces:**
-- Produces: `IntermediateStopWaitingPolicy`, `ABUJA_INTERMEDIATE_STOP_WAIT_POLICY`, `WaitMeterSnapshot`, `calculate_wait_meter(*, state, now) -> WaitMeterSnapshot`, and `gross_wait_charge(*, billable_seconds, rate_per_minute) -> Decimal`.
+- Produces: `IntermediateStopWaitingPolicy`, `ABUJA_INTERMEDIATE_STOP_WAIT_POLICY`, `WaitStateLike` (a structural Protocol so pure meter tests do not depend on ORM models), `WaitMeterSnapshot`, `calculate_wait_meter(*, state: WaitStateLike, now: datetime) -> WaitMeterSnapshot`, and `gross_wait_charge(*, billable_seconds, rate_per_minute) -> Decimal`.
 - Consumes: existing `ABUJA_RIDE_TIMING_POLICY` values for 180/600/300 seconds so timing has one source of truth.
 
 - [ ] **Step 1: Write failing policy tests**
@@ -148,6 +148,15 @@ Expected: FAIL because the meter interfaces do not exist.
 Create:
 
 ```python
+class WaitStateLike(Protocol):
+    arrived_at: datetime
+    free_wait_ends_at: datetime
+    driver_exit_right_at: datetime
+    current_paid_window_started_at: datetime | None
+    authorized_until: datetime | None
+    accrued_billable_seconds: int
+    wait_rate_per_minute: Decimal
+
 @dataclass(frozen=True)
 class WaitMeterSnapshot:
     billable_seconds: int
@@ -166,7 +175,7 @@ def gross_wait_charge(
 
 def calculate_wait_meter(
     *,
-    state: TripStopWaitState,
+    state: WaitStateLike,
     now: datetime,
 ) -> WaitMeterSnapshot: ...
 ```
@@ -594,7 +603,7 @@ Expected: FAIL because the stop-location service is missing.
 - create/lock per-stop verification state;
 - scope state to `assignment.id`;
 - use generic B+ helpers from Task 2;
-- on newly verified arrival, set `TripStop.arrived_at = now`, create `TripStopWaitState` from Task 1 policy, set `TripStop.paid_wait_started_at = free_wait_ends_at` as audit marker only when paid waiting later becomes effective, schedule initial outbox notices, create privacy-safe `intermediate_stop_arrived` event, and redact transient exact driver coordinates after durable activation;
+- on newly verified arrival, set `TripStop.arrived_at = now`, leave `TripStop.paid_wait_started_at = None`, create `TripStopWaitState` from Task 1 policy, schedule initial outbox notices, create privacy-safe `intermediate_stop_arrived` event, and redact transient exact driver coordinates after durable activation;
 - never commit internally; the caller owns the transaction.
 
 - [ ] **Step 5: Write failing waiting lifecycle tests**
@@ -613,7 +622,7 @@ Add tests for:
 
 - [ ] **Step 6: Implement lifecycle transitions**
 
-`depart_current_stop`, `extend_current_stop_wait`, and `terminate_at_current_stop` must accept explicit `now` for deterministic tests, lock the current stop/wait state, finalize intervals using Task 1 math, emit privacy-safe events, mutate outbox state through Task 4 helpers, and never call `db.commit()`.
+`depart_current_stop`, `extend_current_stop_wait`, and `terminate_at_current_stop` must accept explicit `now` for deterministic tests, lock the current stop/wait state, finalize intervals using Task 1 math, set `TripStop.paid_wait_started_at = state.free_wait_ends_at` on the first consequential mutation that observes `billable_seconds > 0` (otherwise leave it `NULL`), emit privacy-safe events with the effective paid boundary where relevant, mutate outbox state through Task 4 helpers, and never call `db.commit()`.
 
 - [ ] **Step 7: Run service tests and Batch 8 regression**
 
