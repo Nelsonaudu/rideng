@@ -1,4 +1,4 @@
-from app.models.driver_assignment import (
+﻿from app.models.driver_assignment import (
     DriverAssignment,
 )
 from app.models.driver_document import (
@@ -9,6 +9,9 @@ from app.models.driver_profile import (
 )
 from app.models.idempotency_record import (
     IdempotencyRecord,
+)
+from app.models.notification_outbox import (
+    NotificationOutbox,
 )
 from app.models.ride_offer import RideOffer
 from app.models.ride_request import RideRequest
@@ -24,6 +27,12 @@ from app.models.trip_start_verification import (
     TripStartVerification,
 )
 from app.models.trip_stop import TripStop
+from app.models.trip_stop_location_verification import (
+    TripStopLocationVerificationState,
+)
+from app.models.trip_stop_wait_state import (
+    TripStopWaitState,
+)
 from app.models.user import User
 from app.models.user_role import UserRole
 from app.models.vehicle import Vehicle
@@ -52,5 +61,8 @@ __all__ = [
     "TripEvent",
     "TripStartVerification",
     "TripLocationVerificationState",
+    "TripStopLocationVerificationState",
+    "TripStopWaitState",
+    "NotificationOutbox",
     "IdempotencyRecord",
 ]
