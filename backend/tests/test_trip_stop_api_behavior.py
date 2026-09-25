@@ -1,4 +1,4 @@
-﻿from datetime import UTC, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 import unittest
@@ -214,7 +214,7 @@ class TripStopApiBehaviorTests(
             (
                 f"/api/v1/trips/"
                 f"{self.trip_id}/"
-                "stop-location"
+                "stops/current/location"
             ),
             json=self.location_body(),
         )
@@ -234,7 +234,7 @@ class TripStopApiBehaviorTests(
             (
                 f"/api/v1/trips/"
                 f"{self.trip_id}/"
-                "stop-location"
+                "stops/current/location"
             ),
             json=self.location_body(),
         )
@@ -268,17 +268,17 @@ class TripStopApiBehaviorTests(
             403,
         )
 
-    def test_driver_cannot_authorize_extension(self):
+    def test_rider_cannot_authorize_driver_extension(self):
         self.override_identity(
-            user=self.driver,
-            roles={"driver"},
+            user=self.rider,
+            roles={"rider"},
         )
 
         response = self.client.post(
             (
                 f"/api/v1/trips/"
                 f"{self.trip_id}/"
-                "stops/current/extend"
+                "stops/current/extend-wait"
             ),
             headers={
                 "Idempotency-Key": (
@@ -302,7 +302,7 @@ class TripStopApiBehaviorTests(
             (
                 f"/api/v1/trips/"
                 f"{self.trip_id}/"
-                "stops/current/exit-right"
+                "stops/current/end-trip"
             ),
             headers={
                 "Idempotency-Key": (
@@ -392,7 +392,7 @@ class TripStopApiBehaviorTests(
             return_value=service_result,
         ) as process:
             response = (
-                self.routes.submit_stop_location(
+                self.routes.submit_current_stop_location(
                     trip_id=self.trip_id,
                     payload=payload,
                     db=db,
@@ -472,7 +472,7 @@ class TripStopApiBehaviorTests(
             with self.assertRaises(
                 HTTPException
             ) as context:
-                self.routes.submit_stop_location(
+                self.routes.submit_current_stop_location(
                     trip_id=self.trip_id,
                     payload=payload,
                     db=db,
@@ -602,7 +602,7 @@ class TripStopApiBehaviorTests(
             "150.00",
         )
 
-    def test_extension_uses_rider_scoped_idempotency(self):
+    def test_extension_uses_driver_scoped_idempotency(self):
         db = RouteSession(
             trip=self.trip,
             assignment=self.assignment,
@@ -662,18 +662,18 @@ class TripStopApiBehaviorTests(
                 ),
                 db=db,
                 current_user=(
-                    self.rider
+                    self.driver
                 ),
             )
 
         self.assertEqual(
             captured["user_id"],
-            self.rider_id,
+            self.driver_id,
         )
 
         self.assertEqual(
             captured["operation"],
-            "trip_stop_extend",
+            "trip_stop_extend_wait",
         )
 
         self.assertEqual(
@@ -730,7 +730,7 @@ class TripStopApiBehaviorTests(
         with (
             patch.object(
                 self.routes,
-                "exercise_current_stop_exit_right",
+                "terminate_at_current_stop",
                 return_value=(
                     lifecycle_result
                 ),
@@ -741,7 +741,7 @@ class TripStopApiBehaviorTests(
                 side_effect=fake_execute,
             ),
         ):
-            self.routes.exercise_stop_exit_right(
+            self.routes.end_trip_at_current_stop(
                 trip_id=self.trip_id,
                 idempotency_key=(
                     "exit-001"
@@ -759,7 +759,7 @@ class TripStopApiBehaviorTests(
 
         self.assertEqual(
             captured["operation"],
-            "trip_stop_exit_right",
+            "trip_stop_end_trip",
         )
 
         self.assertEqual(

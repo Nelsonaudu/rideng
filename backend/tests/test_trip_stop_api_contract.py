@@ -1,4 +1,4 @@
-﻿from datetime import UTC, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 import unittest
 from uuid import uuid4
@@ -52,7 +52,7 @@ class TripStopApiContractTests(
         self.operation(
             (
                 "/api/v1/trips/"
-                "{trip_id}/stop-location"
+                "{trip_id}/stops/current/location"
             )
         )
 
@@ -68,7 +68,7 @@ class TripStopApiContractTests(
         self.operation(
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/extend"
+                "{trip_id}/stops/current/extend-wait"
             )
         )
 
@@ -76,7 +76,7 @@ class TripStopApiContractTests(
         self.operation(
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/exit-right"
+                "{trip_id}/stops/current/end-trip"
             )
         )
 
@@ -84,7 +84,7 @@ class TripStopApiContractTests(
         paths = [
             (
                 "/api/v1/trips/"
-                "{trip_id}/stop-location"
+                "{trip_id}/stops/current/location"
             ),
             (
                 "/api/v1/trips/"
@@ -92,11 +92,11 @@ class TripStopApiContractTests(
             ),
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/extend"
+                "{trip_id}/stops/current/extend-wait"
             ),
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/exit-right"
+                "{trip_id}/stops/current/end-trip"
             ),
         ]
 
@@ -123,11 +123,11 @@ class TripStopApiContractTests(
             ),
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/extend"
+                "{trip_id}/stops/current/extend-wait"
             ),
             (
                 "/api/v1/trips/"
-                "{trip_id}/stops/current/exit-right"
+                "{trip_id}/stops/current/end-trip"
             ),
         ]
 

@@ -74,7 +74,7 @@ api_router.include_router(
 
 api_router.include_router(
     trip_stops.router,
-    tags=["Trip Stop Execution"],
+    tags=["Trip Stops"],
 )
 
 

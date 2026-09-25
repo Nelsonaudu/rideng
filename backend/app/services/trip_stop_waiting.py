@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Protocol
@@ -910,3 +910,103 @@ def exercise_current_stop_exit_right(
             "driver_exit_right"
         ),
     )
+
+
+def terminate_at_current_stop(
+    *,
+    db: _LifecycleSession,
+    trip: _LifecycleTrip,
+    assignment: _LifecycleAssignment,
+    rider_id: _LifecycleUUID,
+    now: _lifecycle_datetime,
+) -> StopWaitClosureResult:
+    """
+    End an in-progress trip at the authoritative current
+    intermediate stop after the original exit-right boundary.
+
+    The driver's exit right, once earned, remains available even
+    during a voluntarily-authorized extension.
+    """
+    _validate_wait_actor(
+        trip=trip,
+        assignment=assignment,
+        rider_id=rider_id,
+    )
+
+    stop, wait = _open_wait_context(
+        db=db,
+        trip=trip,
+        assignment=assignment,
+    )
+
+    exit_right_at = (
+        wait.driver_exit_right_at
+    )
+
+    if (
+        exit_right_at is None
+        or now < exit_right_at
+    ):
+        raise ValueError(
+            "Driver exit right is not "
+            "available yet."
+        )
+
+    result = _close_wait(
+        db=db,
+        trip=trip,
+        assignment=assignment,
+        rider_id=rider_id,
+        stop=stop,
+        wait=wait,
+        now=now,
+        close_reason=(
+            "intermediate_stop_wait_timeout"
+        ),
+    )
+
+    assignment.status = "completed"
+
+    trip.status = "terminated"
+    trip.active_assignment_id = None
+
+    _record_wait_event(
+        db=db,
+        trip=trip,
+        assignment=assignment,
+        event_type=(
+            "intermediate_stop_wait_timeout"
+        ),
+        event_data={
+            "stop_id": str(stop.id),
+            "stop_sequence": (
+                stop.sequence
+            ),
+            "assignment_id": str(
+                assignment.id
+            ),
+            "termination_reason": (
+                "intermediate_stop_wait_timeout"
+            ),
+            "terminated_at": (
+                now.isoformat()
+            ),
+            "billable_seconds": (
+                result.final_billable_seconds
+            ),
+            "gross_wait_charge": str(
+                result.final_wait_charge
+            ),
+            "extension_count": (
+                wait.extension_count
+            ),
+            "original_agreed_fare": str(
+                trip.agreed_fare
+            ),
+        },
+        now=now,
+    )
+
+    db.flush()
+
+    return result
