@@ -286,6 +286,12 @@ Conceptually:
 
 `TripStop` remains the itinerary/execution record.
 
+Existing `TripStop` timestamp semantics are:
+
+- `arrived_at` is the server-accepted verified stop-arrival time;
+- `departed_at` is the server-accepted stop-departure time;
+- `paid_wait_started_at` is a denormalized audit marker only, not meter authority. It remains `NULL` if the stop closes before any billable waiting. If billable waiting occurs, it records the effective first paid-wait boundary (`free_wait_ends_at`).
+
 `TripStopWaitState` remains the authoritative waiting policy and meter record.
 
 `TripEvent` remains the append-only audit trail.
@@ -467,7 +473,7 @@ The operation must:
 6. close the wait state;
 7. close the current stop;
 8. set `Trip.status = "terminated"`;
-9. clear/close the active assignment as required by trip termination policy;
+9. set the active `DriverAssignment.status = "completed"` to close the assignment without classifying the driver as having cancelled, and clear `Trip.active_assignment_id`;
 10. cancel pending warning intents;
 11. create structured audit events;
 12. commit atomically.
