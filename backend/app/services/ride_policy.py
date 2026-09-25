@@ -1,7 +1,7 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
-from collections.abc import Sequence
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -35,6 +35,14 @@ class RideFarePolicy:
 
 
 @dataclass(frozen=True)
+class IntermediateStopWaitingPolicy:
+    free_wait_seconds: int
+    wait_rate_per_minute: Decimal
+    driver_exit_right_seconds: int
+    extension_seconds: int
+
+
+@dataclass(frozen=True)
 class FareBand:
     minimum_offer_fare: Decimal
     recommended_fare: Decimal
@@ -52,6 +60,22 @@ ABUJA_RIDE_TIMING_POLICY = RideTimingPolicy(
     stop_control_seconds=600,
     stop_extension_seconds=300,
     maximum_intermediate_stops=4,
+)
+
+
+ABUJA_INTERMEDIATE_STOP_WAIT_POLICY = (
+    IntermediateStopWaitingPolicy(
+        free_wait_seconds=(
+            ABUJA_RIDE_TIMING_POLICY.stop_free_wait_seconds
+        ),
+        wait_rate_per_minute=Decimal("75.00"),
+        driver_exit_right_seconds=(
+            ABUJA_RIDE_TIMING_POLICY.stop_control_seconds
+        ),
+        extension_seconds=(
+            ABUJA_RIDE_TIMING_POLICY.stop_extension_seconds
+        ),
+    )
 )
 
 

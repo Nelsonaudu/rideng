@@ -1,6 +1,8 @@
 from decimal import Decimal
 import unittest
 
+import app.services.ride_policy as ride_policy
+
 from app.services.ride_policy import (
     ABUJA_RIDE_TIMING_POLICY,
     build_development_fare_band,
@@ -55,6 +57,65 @@ class RidePolicyTests(unittest.TestCase):
         self.assertEqual(
             policy.maximum_intermediate_stops,
             4,
+        )
+
+    def test_approved_abuja_intermediate_stop_waiting_policy(self):
+        policy = getattr(
+            ride_policy,
+            "ABUJA_INTERMEDIATE_STOP_WAIT_POLICY",
+            None,
+        )
+
+        self.assertIsNotNone(
+            policy,
+            "ABUJA_INTERMEDIATE_STOP_WAIT_POLICY must exist.",
+        )
+
+        self.assertEqual(
+            policy.free_wait_seconds,
+            180,
+        )
+
+        self.assertEqual(
+            policy.wait_rate_per_minute,
+            Decimal("75.00"),
+        )
+
+        self.assertEqual(
+            policy.driver_exit_right_seconds,
+            600,
+        )
+
+        self.assertEqual(
+            policy.extension_seconds,
+            300,
+        )
+
+    def test_intermediate_stop_waiting_policy_reuses_approved_timers(self):
+        policy = getattr(
+            ride_policy,
+            "ABUJA_INTERMEDIATE_STOP_WAIT_POLICY",
+            None,
+        )
+
+        self.assertIsNotNone(
+            policy,
+            "ABUJA_INTERMEDIATE_STOP_WAIT_POLICY must exist.",
+        )
+
+        self.assertEqual(
+            policy.free_wait_seconds,
+            ABUJA_RIDE_TIMING_POLICY.stop_free_wait_seconds,
+        )
+
+        self.assertEqual(
+            policy.driver_exit_right_seconds,
+            ABUJA_RIDE_TIMING_POLICY.stop_control_seconds,
+        )
+
+        self.assertEqual(
+            policy.extension_seconds,
+            ABUJA_RIDE_TIMING_POLICY.stop_extension_seconds,
         )
 
     def test_fare_band_uses_expected_relationships(self):
