@@ -4,17 +4,19 @@ from decimal import (
     Decimal,
     ROUND_HALF_UP,
 )
-from math import (
-    asin,
-    cos,
-    radians,
-    sin,
-    sqrt,
-)
 from uuid import UUID
 
 from app.models.trip_location_verification import (
     TripLocationVerificationState,
+)
+from app.services.location_verification import (
+    ArrivalLocationPolicy,
+    LocationSample,
+    LocationSampleConflictError as GenericLocationSampleConflictError,
+    LocationSampleRejectedError as GenericLocationSampleRejectedError,
+    LocationSampleSequenceError as GenericLocationSampleSequenceError,
+    advance_arrival_confirmation,
+    validate_location_sample,
 )
 
 
@@ -91,60 +93,6 @@ class LocationSampleConflictError(
     pass
 
 
-def _distance_meters(
-    first_latitude: Decimal,
-    first_longitude: Decimal,
-    second_latitude: Decimal,
-    second_longitude: Decimal,
-) -> float:
-    first_lat = radians(
-        float(first_latitude)
-    )
-
-    first_lon = radians(
-        float(first_longitude)
-    )
-
-    second_lat = radians(
-        float(second_latitude)
-    )
-
-    second_lon = radians(
-        float(second_longitude)
-    )
-
-    latitude_delta = (
-        second_lat
-        - first_lat
-    )
-
-    longitude_delta = (
-        second_lon
-        - first_lon
-    )
-
-    value = (
-        sin(
-            latitude_delta / 2
-        )
-        ** 2
-        + cos(first_lat)
-        * cos(second_lat)
-        * sin(
-            longitude_delta / 2
-        )
-        ** 2
-    )
-
-    return (
-        2
-        * 6371008.8
-        * asin(
-            sqrt(value)
-        )
-    )
-
-
 def _decimal_2(
     value: float,
 ) -> Decimal:
@@ -153,6 +101,37 @@ def _decimal_2(
     ).quantize(
         Decimal("0.01"),
         rounding=ROUND_HALF_UP,
+    )
+
+
+def _arrival_policy(
+    *,
+    policy: PickupLocationVerificationPolicy,
+) -> ArrivalLocationPolicy:
+    return ArrivalLocationPolicy(
+        arrival_radius_m=(
+            policy.arrival_radius_m
+        ),
+        max_horizontal_accuracy_m=(
+            policy.max_horizontal_accuracy_m
+        ),
+        max_sample_age_seconds=(
+            policy.max_sample_age_seconds
+        ),
+        max_future_skew_seconds=(
+            policy.max_future_skew_seconds
+        ),
+        min_confirmation_separation_seconds=(
+            policy
+            .min_arrival_sample_separation_seconds
+        ),
+        max_confirmation_separation_seconds=(
+            policy
+            .max_arrival_sample_separation_seconds
+        ),
+        max_plausible_speed_mps=(
+            policy.max_plausible_speed_mps
+        ),
     )
 
 
@@ -193,38 +172,45 @@ def _reset_for_assignment(
     state.updated_at = now
 
 
-def _is_exact_replay(
+def _stored_previous_sample(
     *,
     state: TripLocationVerificationState,
-    sample_id: UUID,
-    latitude: Decimal,
-    longitude: Decimal,
-    horizontal_accuracy_m: Decimal,
-    captured_at: datetime,
-) -> bool:
-    if (
-        state.last_sample_id
-        != sample_id
-    ):
-        return False
+    reported_speed_mps: Decimal | None,
+    is_mocked: bool | None,
+) -> LocationSample | None:
+    required_values = (
+        state.last_sample_id,
+        state.last_latitude,
+        state.last_longitude,
+        state.last_horizontal_accuracy_m,
+        state.last_sample_captured_at,
+    )
 
-    if (
-        state.last_latitude
-        == latitude
-        and state.last_longitude
-        == longitude
-        and state
-        .last_horizontal_accuracy_m
-        == horizontal_accuracy_m
-        and state
-        .last_sample_captured_at
-        == captured_at
+    if any(
+        value is None
+        for value in required_values
     ):
-        return True
+        return None
 
-    raise LocationSampleConflictError(
-        "Location sample ID was reused "
-        "with different data."
+    return LocationSample(
+        sample_id=state.last_sample_id,
+        latitude=state.last_latitude,
+        longitude=state.last_longitude,
+        horizontal_accuracy_m=(
+            state.last_horizontal_accuracy_m
+        ),
+        captured_at=(
+            state.last_sample_captured_at
+        ),
+        # These two values are not persisted in
+        # the Batch 8 rolling state. Supplying the
+        # current values preserves Batch 8 replay
+        # identity semantics, which were based on
+        # the persisted fields above.
+        reported_speed_mps=(
+            reported_speed_mps
+        ),
+        is_mocked=is_mocked,
     )
 
 
@@ -241,29 +227,63 @@ def _replay_result(
             "is incomplete."
         )
 
-    return (
-        PickupLocationVerificationResult(
-            replayed=True,
-            distance_to_pickup_m=float(
-                state
-                .last_distance_to_pickup_m
-            ),
-            progress_verified=(
-                state.progress_verified_at
-                is not None
-            ),
-            progress_newly_verified=False,
-            arrival_candidate_count=(
-                state
-                .arrival_candidate_count
-            ),
-            arrival_verified=(
-                state.arrival_verified_at
-                is not None
-            ),
-            arrival_newly_verified=False,
-        )
+    return PickupLocationVerificationResult(
+        replayed=True,
+        distance_to_pickup_m=float(
+            state
+            .last_distance_to_pickup_m
+        ),
+        progress_verified=(
+            state.progress_verified_at
+            is not None
+        ),
+        progress_newly_verified=False,
+        arrival_candidate_count=(
+            state.arrival_candidate_count
+        ),
+        arrival_verified=(
+            state.arrival_verified_at
+            is not None
+        ),
+        arrival_newly_verified=False,
     )
+
+
+def _validate_with_shared_engine(
+    *,
+    sample: LocationSample,
+    previous_sample: LocationSample | None,
+    pickup_latitude: Decimal,
+    pickup_longitude: Decimal,
+    now: datetime,
+    policy: PickupLocationVerificationPolicy,
+):
+    try:
+        return validate_location_sample(
+            sample=sample,
+            target_latitude=pickup_latitude,
+            target_longitude=pickup_longitude,
+            previous_sample=previous_sample,
+            now=now,
+            policy=_arrival_policy(
+                policy=policy,
+            ),
+        )
+
+    except GenericLocationSampleRejectedError as exc:
+        raise LocationSampleRejectedError(
+            str(exc)
+        ) from exc
+
+    except GenericLocationSampleSequenceError as exc:
+        raise LocationSampleSequenceError(
+            str(exc)
+        ) from exc
+
+    except GenericLocationSampleConflictError as exc:
+        raise LocationSampleConflictError(
+            str(exc)
+        ) from exc
 
 
 def process_pickup_location_observation(
@@ -291,16 +311,17 @@ def process_pickup_location_observation(
         or datetime.now(UTC)
     )
 
+    # Preserve the original Batch 8 behavior:
+    # a malformed timezone does not mutate
+    # assignment-scoped verification state.
     if (
         captured_at.tzinfo is None
         or captured_at.utcoffset()
         is None
     ):
-        raise (
-            LocationSampleRejectedError(
-                "Location timestamp must "
-                "include a timezone."
-            )
+        raise LocationSampleRejectedError(
+            "Location timestamp must "
+            "include a timezone."
         )
 
     if (
@@ -313,8 +334,7 @@ def process_pickup_location_observation(
             now=now,
         )
 
-    if _is_exact_replay(
-        state=state,
+    sample = LocationSample(
         sample_id=sample_id,
         latitude=latitude,
         longitude=longitude,
@@ -322,153 +342,61 @@ def process_pickup_location_observation(
             horizontal_accuracy_m
         ),
         captured_at=captured_at,
+        reported_speed_mps=(
+            reported_speed_mps
+        ),
+        is_mocked=is_mocked,
+    )
+
+    previous_sample = (
+        _stored_previous_sample(
+            state=state,
+            reported_speed_mps=(
+                reported_speed_mps
+            ),
+            is_mocked=is_mocked,
+        )
+    )
+
+    if (
+        state.last_sample_id
+        == sample_id
+        and previous_sample is None
     ):
+        raise LocationSampleConflictError(
+            "Stored location sample "
+            "is incomplete."
+        )
+
+    validation = (
+        _validate_with_shared_engine(
+            sample=sample,
+            previous_sample=previous_sample,
+            pickup_latitude=(
+                pickup_latitude
+            ),
+            pickup_longitude=(
+                pickup_longitude
+            ),
+            now=now,
+            policy=policy,
+        )
+    )
+
+    if validation.replayed:
         return _replay_result(
             state=state,
         )
 
-    if is_mocked is True:
-        raise (
-            LocationSampleRejectedError(
-                "Mocked location samples "
-                "cannot verify pickup."
-            )
-        )
+    distance_to_pickup_m = (
+        validation.distance_to_target_m
+    )
 
     accuracy = float(
         horizontal_accuracy_m
     )
 
-    if accuracy <= 0:
-        raise (
-            LocationSampleRejectedError(
-                "Horizontal accuracy must "
-                "be positive."
-            )
-        )
-
-    if (
-        accuracy
-        > policy
-        .max_horizontal_accuracy_m
-    ):
-        raise (
-            LocationSampleRejectedError(
-                "Location accuracy is "
-                "too poor for pickup "
-                "verification."
-            )
-        )
-
-    age_seconds = (
-        now
-        - captured_at
-    ).total_seconds()
-
-    if (
-        age_seconds
-        > policy.max_sample_age_seconds
-    ):
-        raise (
-            LocationSampleRejectedError(
-                "Location sample is stale."
-            )
-        )
-
-    if (
-        age_seconds
-        < -policy
-        .max_future_skew_seconds
-    ):
-        raise (
-            LocationSampleRejectedError(
-                "Location timestamp is "
-                "too far in the future."
-            )
-        )
-
-    if (
-        reported_speed_mps
-        is not None
-        and float(
-            reported_speed_mps
-        )
-        > policy
-        .max_plausible_speed_mps
-    ):
-        raise (
-            LocationSampleRejectedError(
-                "Reported vehicle speed "
-                "is implausible."
-            )
-        )
-
-    if (
-        state.last_sample_captured_at
-        is not None
-        and captured_at
-        <= state
-        .last_sample_captured_at
-    ):
-        raise (
-            LocationSampleSequenceError(
-                "Location samples must "
-                "have strictly increasing "
-                "capture times."
-            )
-        )
-
-    if (
-        state.last_latitude
-        is not None
-        and state.last_longitude
-        is not None
-        and state
-        .last_sample_captured_at
-        is not None
-    ):
-        delta_seconds = (
-            captured_at
-            - state
-            .last_sample_captured_at
-        ).total_seconds()
-
-        movement_m = (
-            _distance_meters(
-                state.last_latitude,
-                state.last_longitude,
-                latitude,
-                longitude,
-            )
-        )
-
-        if (
-            delta_seconds > 0
-            and (
-                movement_m
-                / delta_seconds
-            )
-            > policy
-            .max_plausible_speed_mps
-        ):
-            raise (
-                LocationSampleRejectedError(
-                    "Location movement is "
-                    "physically implausible."
-                )
-            )
-
-    distance_to_pickup_m = (
-        _distance_meters(
-            latitude,
-            longitude,
-            pickup_latitude,
-            pickup_longitude,
-        )
-    )
-
     progress_newly_verified = False
-    arrival_newly_verified = False
 
     if (
         state.progress_verified_at
@@ -586,102 +514,59 @@ def process_pickup_location_observation(
                         captured_at
                     )
 
-    arrival_candidate = (
-        distance_to_pickup_m
-        + accuracy
-        <= policy.arrival_radius_m
+    confirmation = (
+        advance_arrival_confirmation(
+            candidate_count=(
+                state.arrival_candidate_count
+            ),
+            last_candidate_at=(
+                state.last_arrival_candidate_at
+            ),
+            already_verified=(
+                state.arrival_verified_at
+                is not None
+            ),
+            distance_to_target_m=(
+                distance_to_pickup_m
+            ),
+            horizontal_accuracy_m=(
+                horizontal_accuracy_m
+            ),
+            captured_at=captured_at,
+            policy=_arrival_policy(
+                policy=policy,
+            ),
+        )
     )
 
-    if (
-        state.arrival_verified_at
-        is None
-    ):
-        if arrival_candidate:
-            if (
-                state
-                .arrival_candidate_count
-                == 0
-                or state
-                .last_arrival_candidate_at
-                is None
-            ):
-                state.arrival_candidate_count = (
-                    1
-                )
+    state.arrival_candidate_count = (
+        confirmation.candidate_count
+    )
 
-                state.last_arrival_candidate_at = (
-                    captured_at
-                )
+    state.last_arrival_candidate_at = (
+        confirmation.last_candidate_at
+    )
 
-            else:
-                candidate_delta_seconds = (
-                    captured_at
-                    - state
-                    .last_arrival_candidate_at
-                ).total_seconds()
+    arrival_newly_verified = (
+        confirmation
+        .arrival_newly_verified
+    )
 
-                if (
-                    candidate_delta_seconds
-                    < policy
-                    .min_arrival_sample_separation_seconds
-                ):
-                    pass
+    if arrival_newly_verified:
+        state.arrival_verified_at = (
+            now
+        )
 
-                elif (
-                    candidate_delta_seconds
-                    <= policy
-                    .max_arrival_sample_separation_seconds
-                ):
-                    state.arrival_candidate_count += (
-                        1
-                    )
-
-                    state.last_arrival_candidate_at = (
-                        captured_at
-                    )
-
-                else:
-                    state.arrival_candidate_count = (
-                        1
-                    )
-
-                    state.last_arrival_candidate_at = (
-                        captured_at
-                    )
-
-            if (
-                state
-                .arrival_candidate_count
-                >= 2
-            ):
-                state.arrival_verified_at = (
-                    now
-                )
-
-                arrival_newly_verified = (
-                    True
-                )
-
-                if (
-                    state
-                    .progress_verified_at
-                    is None
-                ):
-                    state.progress_verified_at = (
-                        now
-                    )
-
-                    progress_newly_verified = (
-                        True
-                    )
-
-        else:
-            state.arrival_candidate_count = (
-                0
+        if (
+            state.progress_verified_at
+            is None
+        ):
+            state.progress_verified_at = (
+                now
             )
 
-            state.last_arrival_candidate_at = (
-                None
+            progress_newly_verified = (
+                True
             )
 
     state.last_sample_id = (
@@ -716,31 +601,28 @@ def process_pickup_location_observation(
 
     state.updated_at = now
 
-    return (
-        PickupLocationVerificationResult(
-            replayed=False,
-            distance_to_pickup_m=(
-                distance_to_pickup_m
-            ),
-            progress_verified=(
-                state.progress_verified_at
-                is not None
-            ),
-            progress_newly_verified=(
-                progress_newly_verified
-            ),
-            arrival_candidate_count=(
-                state
-                .arrival_candidate_count
-            ),
-            arrival_verified=(
-                state.arrival_verified_at
-                is not None
-            ),
-            arrival_newly_verified=(
-                arrival_newly_verified
-            ),
-        )
+    return PickupLocationVerificationResult(
+        replayed=False,
+        distance_to_pickup_m=(
+            distance_to_pickup_m
+        ),
+        progress_verified=(
+            state.progress_verified_at
+            is not None
+        ),
+        progress_newly_verified=(
+            progress_newly_verified
+        ),
+        arrival_candidate_count=(
+            state.arrival_candidate_count
+        ),
+        arrival_verified=(
+            state.arrival_verified_at
+            is not None
+        ),
+        arrival_newly_verified=(
+            arrival_newly_verified
+        ),
     )
 
 
